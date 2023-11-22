@@ -1,7 +1,10 @@
+from typing import Optional, Sequence
 import numpy as np
 import torch
-from captum.attr import Attribution, Saliency
+from captum.attr import Attribution, Saliency, IntegratedGradients
 from torch.nn import Module
+
+from .vae import VAEGeodesicGradients
 
 
 class AuxiliaryFunction(Module):
@@ -24,6 +27,40 @@ class AuxiliaryFunction(Module):
             raise ValueError(
                 "The internal batch size should be a multiple of input_features.shape[0]"
             )
+
+
+def attribute_individual_dim_multiple_attributers(
+    encoder: callable,
+    dim_latent: int,
+    images: Sequence[np.ndarray],
+    device: torch.device,
+    attr_methods: Sequence[Attribution],
+    baselines: Sequence[Optional[torch.Tensor]],
+) -> np.ndarray:
+    attributions = []
+    latents = []
+    for image in images:
+        input_batch = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device)
+        attributions_batch = []
+        latents.append(encoder(input_batch).detach().cpu().numpy())
+        for attr_method, baseline in zip(attr_methods, baselines):
+            kwargs = {}
+            if isinstance(attr_method, IntegratedGradients):
+                kwargs["baselines"] = baseline
+            elif isinstance(attr_method, VAEGeodesicGradients):
+                kwargs["latent_baselines"] = baseline
+            attribution = (
+                attr_method.attribute(input_batch, target=dim_latent, **kwargs)
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            attributions_batch.append(attribution)
+        attributions.append(np.concatenate(attributions_batch, axis=1))
+    latents = np.concatenate(latents)
+    attributions = np.concatenate(attributions)
+    # attributions = np.abs(np.expand_dims(latents, (2, 3)) * attributions)
+    return attributions
 
 
 def attribute_individual_dim(
